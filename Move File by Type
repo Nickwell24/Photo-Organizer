@@ -1,0 +1,78 @@
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$false)]
+        [string]$cwd
+    )
+    $cwd = Read-Host -Prompt "What Directory needs sorting?"
+    $Dest_Folder = Read-Host -Prompt "Where to move them?"
+    #Create Directory for Empty folders
+    $Empty = ''
+
+    #$filecount = Get-Childitem $cwd -file | Group-Object Extension -NoElement | Sort-Object count -desc
+
+    # Gather the extensions of the files in the folder path
+    $extforfolders = Get-ChildItem $cwd -File -Recurse | Select-Object Extension
+    # Gather the list of files only
+    $files = Get-ChildItem $cwd -File -Recurse
+
+    # Create a new list to add the extensions to
+    $extensions = New-Object Collections.Generic.List[String]
+
+    Write-Host "Getting files and creating subfolders of extensions if it does not exist..."
+    foreach($folder in $extforfolders){
+        # Use the .NET class to create a directory. If it exits will proceed. If not exists, will create the directory
+        [System.IO.Directory]::CreateDirectory("$Dest_Folder\$($folder.Extension)") | Out-Null
+        # Add every extension to the list. Will sort later.
+        $extensions.Add($folder.Extension)
+    }
+
+    if($extensions.Count -gt 0){
+                $Total = $files.count
+                $Remaining = $Total
+        foreach($file in $files){       
+            try {
+                #Write-Host "Moving $($file) to folder: $Dest_Folder\$($file.Extension)"
+                # If File exists or in use ErrorAction Stop so we can catch the error properly
+                # Using $file.FullName to get long path of file since script/function may not always be in the same directory as files. 
+                Move-Item $file.FullName -Destination "$Dest_Folder\$($file.Extension)" -ErrorAction Stop
+            }
+            catch {
+                $num=1
+                $Dest_Folder_2 = "$Dest_Folder\$($file.Extension)" 
+                #Write-Host "Failed to move file $file.Fullname to folder. File Name already exists, attempting to rename..."
+                $nextName = Join-Path -Path $Dest_Folder_2 -ChildPath $file.Name
+                While (Test-Path -Path $nextName)
+                {
+                $nextName = Join-Path  -Path $Dest_Folder_2 -ChildPath ($file.BaseName + "_$num" + $file.Extension)    
+                $num+=1   
+                }
+                Move-Item $file.FullName -Destination $nextName
+                #Write-Host "File moved to $nextName"
+            }
+            $Remaining = $Remaining - 1
+            Write-Host "$Remaining of $Total remaining to transfer"
+        }
+        Write-Host 
+        "Moved $Total files
+        Source: $cwd
+        Destination: $Dest_Folder"
+        Write-Host "Summary of Sorting Files"
+        # Group and count the extentions
+        $extensions | Group-Object -NoElement | Sort-Object count -Descending
+
+        <#Move Empty Directories#>
+        Get-ChildItem -Path $cwd -Directory -Recurse | Where {$_.GetFileSystemInfos().Count -eq 0} |
+        ForEach-Object {
+            $nextName = Join-Path -Path $Empty -ChildPath $_.name
+            while(Test-Path -Path $nextName)
+            {
+                $nextName = Join-Path $Empty ($_.BaseName + "_$num" + $_.Extension)    
+                $num+=1   
+            }
+
+            $_ | Move-Item -Destination $nextName
+        }
+    }else {
+        Write-Host "No files to sort here: $cwd"
+    }
+    
