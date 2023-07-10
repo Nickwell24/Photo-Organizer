@@ -1,0 +1,83 @@
+    cls
+    $Path =  Read-Host -Prompt 'Enter file path for searching duplicate files (e.g. C:\Temp, C:\)'
+    $DuplicateFileMoveLocation = Read-Host -Prompt 'Enter file path for storing duplicate files (e.g. C:\Temp, C:\)'
+    
+    # Create a CSV File and put the address here
+    $Csv = 
+    #$empty = '0'
+    $ErrorActionPreference = "Stop"
+    $result = ''
+    $Hashes = ''
+
+    #Collect files based on extension
+    Write-Host "Scanning Files... "
+
+    #Only get files that are under 1GB.
+    $DuplicatePaths = Get-ChildItem $Path -Recurse -File | Where-Object {$_.Length -lt 1048576000}
+    $TotalCount = (Get-ChildItem $Path -Recurse).Count
+    cls
+    Write-Host "$TotalCount files found in your Directory."
+    Write-Host "Starting to group by filesize."
+
+    #Group files based on file Length (size)
+    $Length = $DuplicatePaths | Group-Object -Property Length | ? Count -GT 1
+    $TotalLength = $Length.Count
+    cls
+    Write-Host "$TotalLength possible files with duplicates found."
+    Write-Host "Starting to hash & compare files of exact length."
+
+    #Hash the files in each group  % means, ForEach-Object
+    $Hashes = $Length.Group.versioninfo.filename | 
+        Get-Item | 
+        Get-FileHash -Algorithm MD5 | 
+        Group-Object -Property Hash | 
+        ? Count -GT 1
+    $HashLength = $Hashes.Count
+    Write-Host "$HashLength files found with the same hash (Duplicates)."
+
+    #Processes similar $Hashes and assigns all but 1 to $Result.
+    $result = foreach ($h in $Hashes)
+    {
+    $count = $h.count
+    $count--
+    $h.Group | Select-Object -Property Path, Hash -skip 1
+    }
+
+    $Export = $result | Select-Object -Property Path,Hash | Export-CSV -Path $csv -NoTypeInformation -Force
+    Import-Csv -Path $Csv
+
+    Write-Warning ("The Script found the {0} duplicate files out of {1} total. The duplicates will be moved to {2}." -f $result.Count, $TotalCount,$DuplicateFileMoveLocation)
+    $Export
+    
+    $answer = 'y' # Read-Host -Prompt "Do you want to Proceed (Y or N)?"
+
+    if ($answer -eq 'y') {
+        if ($DuplicateFileMoveLocation -ne "") {
+            # Create the duplicate file move directory if it does not exist.
+            if ((Test-Path -Path $DuplicateFileMoveLocation) -eq $false) {New-Item -Path (Split-Path $DuplicateFileMoveLocation -Parent) -Name (Split-Path $DuplicateFileMoveLocation -Leaf) -ItemType "directory" *> $null}
+            $Total = $result.Count
+            $Remaining = $result.Count
+            #Check if File exists. If so rename it.
+            ForEach ($duplicate in $Result.path){
+                $nextName = Join-Path -Path $DuplicateFileMoveLocation -ChildPath $_.Name
+                $num = 1
+                $File = Split-Path $duplicate -Leaf
+                $File_Name = $File.Substring(0,$File.LastIndexOf("."))
+                $refcharacter = $file.IndexOf(".")
+                $extension = $file.Substring($refcharacter+1)
+                $Extension = "."+$extension
+                #Checking the path. If the file exists, returns true, $num is added to the name.
+                while(Test-Path -Path $nextName)
+                    {
+                       $nextName = Join-Path -Path $DuplicateFileMoveLocation -CHildPath ($file_Name+"_$num"+$extension)
+                       $num+=1
+                    }
+                    Move-Item $duplicate -Destination $nextName
+                    $Remaining--
+                    Write-Host "$Remaining of $Total remaining to transfer"
+                    }
+        }
+    }
+    Write-Host "* * * Completed Removing Duplicates * * *" 
+    Write-Host "Source: $Path"
+    Write-Host "Destination: $DuplicateFileMoveLocation"
