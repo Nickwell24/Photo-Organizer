@@ -1,83 +1,83 @@
-    cls
-    $Path =  Read-Host -Prompt 'Enter file path for searching duplicate files (e.g. C:\Temp, C:\)'
-    $DuplicateFileMoveLocation = Read-Host -Prompt 'Enter file path for storing duplicate files (e.g. C:\Temp, C:\)'
-    
-    # Create a CSV File and put the address here
-    $Csv = 
-    #$empty = '0'
-    $ErrorActionPreference = "Stop"
-    $result = ''
-    $Hashes = ''
+# Read directories from user
+$Path = Read-Host -Prompt 'Enter file path for searching duplicate files (e.g. C:\Temp, C:\)'
+$DuplicateFileMoveLocation = Read-Host -Prompt 'Enter file path for storing duplicate files (e.g. C:\Temp, C:\)'
 
-    #Collect files based on extension
-    Write-Host "Scanning Files... "
+# Set error preference
+$ErrorActionPreference = "Stop"
 
-    #Only get files that are under 1GB.
-    $DuplicatePaths = Get-ChildItem $Path -Recurse -File | Where-Object {$_.Length -lt 1048576000}
-    $TotalCount = (Get-ChildItem $Path -Recurse).Count
-    cls
-    Write-Host "$TotalCount files found in your Directory."
-    Write-Host "Starting to group by filesize."
+# Initialize a progress counter
+$progressCounter = 0
 
-    #Group files based on file Length (size)
-    $Length = $DuplicatePaths | Group-Object -Property Length | ? Count -GT 1
-    $TotalLength = $Length.Count
-    cls
-    Write-Host "$TotalLength possible files with duplicates found."
-    Write-Host "Starting to hash & compare files of exact length."
+# Define a helper function to write progress
+function Write-ProgressMessage {
+    param($current, $total, $message)
+    Write-Progress -Activity $message -Status ("{0} of {1} completed" -f $current, $total) -PercentComplete (($current / $total) * 100)
+}
 
-    #Hash the files in each group  % means, ForEach-Object
-    $Hashes = $Length.Group.versioninfo.filename | 
-        Get-Item | 
-        Get-FileHash -Algorithm MD5 | 
-        Group-Object -Property Hash | 
-        ? Count -GT 1
-    $HashLength = $Hashes.Count
-    Write-Host "$HashLength files found with the same hash (Duplicates)."
+# Collect files in directory
+Write-Host "Scanning Files... "
+$files = Get-ChildItem $Path -Recurse -File
+$totalFiles = $files.Count
 
-    #Processes similar $Hashes and assigns all but 1 to $Result.
-    $result = foreach ($h in $Hashes)
-    {
-    $count = $h.count
-    $count--
-    $h.Group | Select-Object -Property Path, Hash -skip 1
+# Group files by length and filter out unique files
+$lengthGroups = $files | Group-Object -Property Length | Where-Object Count -gt 1
+$totalGroups = $lengthGroups.Count
+
+# Create a list to store results
+$duplicates = New-Object System.Collections.Generic.List[PSObject]
+
+# Hash and compare files of same length
+Write-Host "Starting to hash & compare files of exact length."
+foreach ($group in $lengthGroups) {
+    # Update progress
+    $progressCounter++
+    Write-ProgressMessage $progressCounter $totalGroups "Hashing and comparing files"
+
+    # Hash files in current group and filter out unique hashes
+    $hashGroups = $group.Group | Get-FileHash -Algorithm MD5 | Group-Object -Property Hash | Where-Object Count -gt 1
+
+    # Add duplicates to results, skipping the first file in each group
+    foreach ($hashGroup in $hashGroups) {
+        $duplicates.AddRange(($hashGroup.Group | Select-Object -Skip 1))
+    }
+}
+
+# Print duplicate statistics
+Write-Host ("{0} duplicate files found out of {1} total. The duplicates will be moved to {2}." -f $duplicates.Count, $totalFiles, $DuplicateFileMoveLocation)
+
+# Ask for user confirmation before moving files
+$answer = Read-Host -Prompt "Do you want to Proceed (Y or N)?"
+if ($answer -eq 'y') {
+    # Ensure the destination directory exists
+    if (!(Test-Path -Path $DuplicateFileMoveLocation)) {
+        New-Item -Path $DuplicateFileMoveLocation -ItemType Directory | Out-Null
     }
 
-    $Export = $result | Select-Object -Property Path,Hash | Export-CSV -Path $csv -NoTypeInformation -Force
-    Import-Csv -Path $Csv
+    # Reset and reuse progress counter for moving files
+    $progressCounter = 0
+    $totalDuplicates = $duplicates.Count
 
-    Write-Warning ("The Script found the {0} duplicate files out of {1} total. The duplicates will be moved to {2}." -f $result.Count, $TotalCount,$DuplicateFileMoveLocation)
-    $Export
-    
-    $answer = 'y' # Read-Host -Prompt "Do you want to Proceed (Y or N)?"
+    # Move duplicate files to new location, renaming if necessary
+    foreach ($file in $duplicates) {
+        # Update progress
+        $progressCounter++
+        Write-ProgressMessage $progressCounter $totalDuplicates "Moving duplicate files"
 
-    if ($answer -eq 'y') {
-        if ($DuplicateFileMoveLocation -ne "") {
-            # Create the duplicate file move directory if it does not exist.
-            if ((Test-Path -Path $DuplicateFileMoveLocation) -eq $false) {New-Item -Path (Split-Path $DuplicateFileMoveLocation -Parent) -Name (Split-Path $DuplicateFileMoveLocation -Leaf) -ItemType "directory" *> $null}
-            $Total = $result.Count
-            $Remaining = $result.Count
-            #Check if File exists. If so rename it.
-            ForEach ($duplicate in $Result.path){
-                $nextName = Join-Path -Path $DuplicateFileMoveLocation -ChildPath $_.Name
-                $num = 1
-                $File = Split-Path $duplicate -Leaf
-                $File_Name = $File.Substring(0,$File.LastIndexOf("."))
-                $refcharacter = $file.IndexOf(".")
-                $extension = $file.Substring($refcharacter+1)
-                $Extension = "."+$extension
-                #Checking the path. If the file exists, returns true, $num is added to the name.
-                while(Test-Path -Path $nextName)
-                    {
-                       $nextName = Join-Path -Path $DuplicateFileMoveLocation -CHildPath ($file_Name+"_$num"+$extension)
-                       $num+=1
-                    }
-                    Move-Item $duplicate -Destination $nextName
-                    $Remaining--
-                    Write-Host "$Remaining of $Total remaining to transfer"
-                    }
+        # Determine destination file name, adding a number if a file with the same name already exists
+        $destinationPath = Join-Path -Path $DuplicateFileMoveLocation -ChildPath $file.Name
+        $fileBaseName = [IO.Path]::GetFileNameWithoutExtension($file.Name)
+        $fileExtension = [IO.Path]::GetExtension($file.Name)
+        $counter = 1
+        while (Test-Path -Path $destinationPath) {
+            $destinationPath = Join-Path -Path $DuplicateFileMoveLocation -ChildPath ("{0}_{1}{2}" -f $fileBaseName, $counter, $fileExtension)
+            $counter++
         }
+
+        # Move the file
+        Move-Item -Path $file.Path -Destination $destinationPath
     }
-    Write-Host "* * * Completed Removing Duplicates * * *" 
-    Write-Host "Source: $Path"
-    Write-Host "Destination: $DuplicateFileMoveLocation"
+}
+
+Write-Host "* * * Completed Removing Duplicates * * *" 
+Write-Host "Source: $Path"
+Write-Host "Destination: $DuplicateFileMoveLocation"
